@@ -10,18 +10,20 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from scikeras.wrappers import KerasClassifier
-from tensorflow.keras.optimizers import Adam, SGD
+from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 
 # Read the CSV file
-dataset = 'exec'
-data = pd.read_csv(dataset + ".csv")
+dataset = 'atlas'
+data1 = pd.read_csv(dataset + ".csv")
+data2 = pd.read_csv(dataset + ".csv")
 model1 = []
 model2 = []
-model1.append(data.drop(columns=['change']))
-model1.append(data['change'])
-model2.append(data.drop(columns=['change', 'type', 'severity', 'resolution', 'status', 'effort']))
-model2.append(data['change'])
+model1.append(data1['change'])
+model1.append(data1.drop(columns=['change']))
+model2.append(data2['change'])
+model2.append(data2.drop(columns=['change', 'type', 'severity', 'resolution', 'status', 'effort']))
+
 models = [{'key': 'Complete', 'value': model1}, {'key': 'NotComplete', 'value': model2}]
 
 def get_scores(y_test, y_pred, dataset, algorithm, model):
@@ -65,7 +67,7 @@ def get_scores(y_test, y_pred, dataset, algorithm, model):
     cnf_matrix = confusion_matrix(y_test, y_pred)
     cnf_matrix = cnf_matrix.astype('float') / cnf_matrix.sum(axis=1)[:, np.newaxis]
     print("Confusion Matrix: [" + str(cnf_matrix[0][0]) + ", " + str(round(cnf_matrix[1][1], 2)) + "]")
-    plot_confusion_matrix(cnf_matrix, dataset, algorithm)
+    plot_confusion_matrix(cnf_matrix, dataset, algorithm, model)
 
     # ROC_AUC
     scores.append(roc_auc_score(y_test, y_pred))
@@ -90,7 +92,7 @@ def get_scores(y_test, y_pred, dataset, algorithm, model):
 
     return scores
 
-def plot_confusion_matrix(cm, dataset, algorithm, normalize=False, title='Confusion matrix', cmap=plt.cm.Blues):
+def plot_confusion_matrix(cm, dataset, algorithm, model, normalize=False, title='Confusion matrix', cmap=plt.cm.Blues):
     
     if normalize:
         cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
@@ -109,30 +111,26 @@ def plot_confusion_matrix(cm, dataset, algorithm, normalize=False, title='Confus
     plt.ylabel('True label')
     plt.xlabel('Predicted label')
     plt.tight_layout()
-    plt.savefig('results/cf-' + dataset + '-' + algorithm +'.png')
+    plt.savefig('results/cf-' + dataset + '_' + algorithm + '_' + model +'.png')
     plt.close()
 
 # Define create_model function for KerasClassifier
-def create_model(units=50, dropout_rate=0.2, optimizer='adam', learning_rate=0.01, momentum=0.0):   
-    if optimizer == 'sgd':
-        opt = SGD(learning_rate, momentum)
-    else:
+def create_model(units=50, dropout_rate=0.2, optimizer='adam', learning_rate=0.1):   
+    if optimizer == 'adam':
         opt = Adam(learning_rate)
-
+    else:
+        opt = optimizer
+        
     model = Sequential()
     model.add(LSTM(units, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
     model.add(Dropout(dropout_rate))
-    model.add(LSTM(units, return_sequences=True))
-    model.add(Dropout(dropout_rate))
-    model.add(LSTM(units))
-    model.add(Dropout(dropout_rate))
     model.add(Dense(1, activation='sigmoid'))
-    model.compile(optimizer=opt, loss='binary_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=opt, loss='binary_crossentropy', metrics=['AUC'])
     return model
 
 for modelo in models:
-    X = modelo.get('value')[0]
-    y = modelo.get('value')[1]
+    y = modelo.get('value')[0]
+    X = modelo.get('value')[1]
 
     # Encode categorical labels if necessary
     label_encoder = LabelEncoder()
@@ -150,11 +148,10 @@ for modelo in models:
     # Define hyperparameters to search
     param_grid = {
         'model__optimizer': ['adam', 'rmsprop'],
-        'model__dropout_rate': [0.1, 0.2, 0.3],
+        'model__dropout_rate': [0.2, 0.3, 0.4],
         'model__units': [50, 100, 150],
-        'model__learning_rate': [0.01, 0.1],
-        'model__momentum': [0.5, 0.9],
-        'epochs': [10,20,30],
+        'model__learning_rate': [0.1, 0.2],
+        'epochs': [10, 20, 30],
         'batch_size': [32, 64, 128]  
     }
 
@@ -162,11 +159,31 @@ for modelo in models:
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     # Perform grid search
-    grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=skf, n_jobs=-1)
+    grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=skf)
     grid_result = grid_search.fit(X_train, y_train)
 
     # Print best hyperparameters
     print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
+
+    head = ['Dataset', 'Algoritm', 'model', 'best_score','best_params']
+
+    if not os.path.exists('results/' + dataset + '-LSTM.csv'):
+        f = open("results/" + dataset + "-LSTM.csv", "a")
+        writer = csv.writer(f)
+        writer.writerow(head)
+        f.close()
+
+    scores = []
+    scores.append(dataset)
+    scores.append('LSTM')
+    scores.append(modelo.get('key'))
+    scores.append(grid_result.best_score_)
+    scores.append(grid_result.best_params_)
+
+    f = open("results/" + dataset + "-LSTM.csv", "a")
+    writer = csv.writer(f)
+    writer.writerow(scores)
+    f.close()
 
     # Evaluate the best model on the test set
     best_model = grid_result.best_estimator_
@@ -174,8 +191,4 @@ for modelo in models:
     y_pred = best_model.predict(X_test)
     y_pred_binary = (y_pred > 0.5).astype(int)
 
-    get_scores(y_test, y_pred, dataset, "LSTM", modelo.get('key'))
-
-    # Calculate accuracy
-    """ accuracy = accuracy_score(y_test, y_pred_binary)
-    print("Test Accuracy:", accuracy) """
+    get_scores(y_test, y_pred_binary, dataset, "LSTM", modelo.get('key'))
